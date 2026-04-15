@@ -304,64 +304,102 @@ def gamma_correction(image, gamma=0.6):
     return corrected_image
  
 #Stone Carving Enhancement Function
-def enhance_stone_carving(image, clip_limit=3.0, tile_grid_size=(8, 8),
-                           bilateral_d=9, bilateral_sigma=75.0,
-                           sharpen_strength=1.5, morph_kernel_size=15,
-                           gamma=0.6):
+def enhance_stone_carving(image, bilateral_d=9, bilateral_sigma=50.0,
+                           sharpen_strength=1.3, blur_sigma=2.0):
     """
-    Applies a multi-stage enhancement pipeline optimised for low-relief stone
-    carvings (e.g. petroglyphs, ancient tablets, architectural engravings).
-    Combines CLAHE, bilateral filtering, unsharp masking, morphological
-    black-hat transform, and gamma correction into a single composite result.
+    Enhances low-relief stone carving images by applying a bilateral denoise
+    followed by a gentle unsharp mask. Preserves the natural tonal balance of
+    the image while reducing surface texture noise and sharpening carving edges.
  
     Parameters:
     - image: The input image to be processed (numpy array).
-    - clip_limit: CLAHE contrast clip limit (default is 3.0).
-    - tile_grid_size: CLAHE tile grid size (default is (8, 8)).
     - bilateral_d: Bilateral filter neighbourhood diameter (default is 9).
-    - bilateral_sigma: Bilateral filter sigma for colour and space (default is 75.0).
-    - sharpen_strength: Unsharp mask weight on the original image (default is 1.5).
-    - morph_kernel_size: Structuring element size for black-hat transform (default is 15).
-    - gamma: Gamma correction value applied to the final composite (default is 0.6).
+    - bilateral_sigma: Bilateral filter sigma for colour and space (default is 50.0).
+    - sharpen_strength: Unsharp mask weight on the original image (default is 1.3).
+    - blur_sigma: Gaussian blur sigma for the unsharp mask (default is 2.0).
  
     Returns:
-    - enhanced_image: The composite enhanced image after the full pipeline.
+    - enhanced_image: The enhanced image.
     """
-    # Convert the image to grayscale if it is not already
     if len(image.shape) == 3 and image.shape[2] == 3:
         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
-        gray_image = image
+        gray_image = image.copy()
  
-    # Stage 1: CLAHE — boost local contrast
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-    stage = clahe.apply(gray_image)
+    # Stage 1: Bilateral filter — reduce surface texture noise, preserve edges
+    denoised = cv2.bilateralFilter(gray_image, bilateral_d, bilateral_sigma, bilateral_sigma)
  
-    # Stage 2: Bilateral filter — smooth surface noise, preserve carving edges
-    stage = cv2.bilateralFilter(stage, bilateral_d, bilateral_sigma, bilateral_sigma)
- 
-    # Stage 3: Unsharp masking — sharpen carving detail
-    blur = cv2.GaussianBlur(stage, (0, 0), 3)
-    stage = cv2.addWeighted(stage, sharpen_strength, blur, -(sharpen_strength - 1), 0)
- 
-    # Stage 4: Black-hat transform — isolate dark recessed features
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT, (morph_kernel_size, morph_kernel_size)
-    )
-    blackhat = cv2.morphologyEx(stage, cv2.MORPH_BLACKHAT, kernel)
- 
-    # Stage 5: Blend CLAHE result with inverted black-hat for composite output
-    blackhat_inv = cv2.bitwise_not(blackhat)
-    composite = cv2.addWeighted(stage, 0.5, blackhat_inv, 0.5, 0)
-    composite = clahe.apply(composite)
- 
-    # Stage 6: Gamma correction — deepen midtone contrast
-    lut = np.array(
-        [int(255 * (i / 255) ** gamma) for i in range(256)], dtype=np.uint8
-    )
-    enhanced_image = cv2.LUT(composite, lut)
+    # Stage 2: Unsharp mask — gently sharpen carving edges
+    blurred = cv2.GaussianBlur(denoised, (0, 0), blur_sigma)
+    enhanced_image = cv2.addWeighted(denoised, sharpen_strength, blurred, -(sharpen_strength - 1), 0)
  
     return enhanced_image
+
+ 
+#Low Relief Enhancement Function
+def enhance_low_relief(image, bilateral_d=9, bilateral_sigma=50.0,
+                        sharpen_strength=1.3, blur_sigma=2.0,
+                        clahe_clip=3.0, clahe_tile=(8, 8),
+                        layer_weight=0.5, final_weight=0.6,
+                        gamma=1.0):
+    """
+    Enhances low-relief stone carving images using the layered unsharp pipeline.
+    Applies bilateral denoising, two rounds of unsharp masking, CLAHE, and
+    weighted blending with the original grayscale to produce a balanced result
+    that sharpens carving edges without washing out natural tonal depth.
+ 
+    Parameters:
+    - image: The input image to be processed (numpy array).
+    - bilateral_d: Bilateral filter neighbourhood diameter (default is 9).
+    - bilateral_sigma: Bilateral filter sigma for colour and space (default is 50.0).
+    - sharpen_strength: Unsharp mask weight (default is 1.3).
+    - blur_sigma: Gaussian blur sigma for unsharp mask (default is 2.0).
+    - clahe_clip: CLAHE contrast clip limit (default is 3.0).
+    - clahe_tile: CLAHE tile grid size (default is (8, 8)).
+    - layer_weight: Blend weight of CLAHE result vs original gray (default is 0.5).
+    - final_weight: Blend weight of unsharp vs layered result (default is 0.6).
+    - gamma: Gamma correction applied as a final step (default is 1.0, i.e. off).
+             Values < 1.0 darken midtones to deepen perceived relief (try 0.8).
+             Leave at 1.0 for images where natural tonal depth is already strong.
+ 
+    Returns:
+    - result: The final enhanced image.
+    """
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_image = image.copy()
+ 
+    # Stage 1: Bilateral denoise + unsharp mask
+    denoised = cv2.bilateralFilter(gray_image, bilateral_d, bilateral_sigma, bilateral_sigma)
+    blurred = cv2.GaussianBlur(denoised, (0, 0), blur_sigma)
+    enhanced = cv2.addWeighted(denoised, sharpen_strength, blurred, -(sharpen_strength - 1), 0)
+ 
+    # Stage 2: Second unsharp pass on the enhanced image
+    blurred2 = cv2.GaussianBlur(enhanced, (0, 0), blur_sigma)
+    unsharp = cv2.addWeighted(enhanced, sharpen_strength, blurred2, -(sharpen_strength - 1), 0)
+ 
+    # Stage 3: CLAHE on the unsharp result
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_tile)
+    clahe_unsharp = clahe.apply(unsharp)
+ 
+    # Stage 4: Blend CLAHE result with original grayscale
+    layered_unsharp = cv2.addWeighted(clahe_unsharp, layer_weight, gray_image, 1.0 - layer_weight, 0)
+ 
+    # Stage 5: Blend unsharp with the layered result
+    final_unsharp = cv2.addWeighted(unsharp, final_weight, layered_unsharp, 1.0 - final_weight, 0)
+ 
+    # Stage 6: Final blend of CLAHE unsharp with the stage 5 result
+    result = cv2.addWeighted(clahe_unsharp, final_weight, final_unsharp, 1.0 - final_weight, 0)
+ 
+    # Stage 7: Optional gamma correction — only applied if gamma != 1.0
+    if gamma != 1.0:
+        lut = np.array(
+            [int(255 * (i / 255) ** gamma) for i in range(256)], dtype=np.uint8
+        )
+        result = cv2.LUT(result, lut)
+ 
+    return result
 
 #Carving Line Isolation Function
 def isolate_carving_lines(image, median_blur_size=3, block_size=25, threshold_c=4,
@@ -569,3 +607,145 @@ def clean_line_mask(line_image, min_area=40, dilate_kernel_size=3,
     cleaned_image = cv2.dilate(cleaned, kernel, iterations=dilate_iterations)
  
     return cleaned_image
+
+#Deep Relief Enhancement Function
+def enhance_deep_relief(image, bilateral_d=9, bilateral_sigma=75.0,
+                         sharpen_strength=1.2, gamma=1.1,
+                         clahe_clip=1.5, clahe_tile=(8, 8),
+                         use_clahe=True):
+    """
+    Applies an enhancement pipeline optimised for deeply carved or sculptural
+    stone subjects where the carved features are recessed voids or prominent
+    raised forms with strong natural shadow. Unlike enhance_stone_carving(),
+    this pipeline preserves dark shadow regions rather than boosting them,
+    preventing bright wash-out of the depth cues that define the shapes.
+ 
+    Suitable for: deeply incised symbols, sculptural relief panels, keyhole
+    or void-form carvings, and any subject where shadow depth is the primary
+    visual carrier of shape information.
+ 
+    Parameters:
+    - image: The input image to be processed (numpy array).
+    - bilateral_d: Bilateral filter neighbourhood diameter (default is 9).
+    - bilateral_sigma: Bilateral filter sigma for colour and space (default is 75.0).
+                       Higher values smooth more aggressively while preserving edges.
+    - sharpen_strength: Unsharp mask weight on the original image (default is 1.2).
+                        Kept lower than enhance_stone_carving() to avoid halo artefacts
+                        around high-contrast shadow edges.
+    - gamma: Gamma correction value (default is 1.1).
+             Values > 1.0 lift midtones without crushing shadows, preserving the
+             natural depth of recessed features. Increase toward 1.4-1.6 if the
+             image is underexposed; decrease toward 0.9 to deepen shadows further.
+    - clahe_clip: CLAHE contrast clip limit (default is 1.5).
+                  Kept lower than enhance_stone_carving() to avoid over-brightening.
+    - clahe_tile: CLAHE tile grid size (default is (8, 8)).
+    - use_clahe: If True, applies a gentle CLAHE pass after bilateral filtering
+                 (default is True). Set to False for images where even mild
+                 contrast enhancement causes wash-out.
+ 
+    Returns:
+    - enhanced_image: The enhanced image with shadow depth preserved.
+    """
+    # Convert the image to grayscale if it is not already
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_image = image.copy()
+ 
+    # Stage 1: Bilateral filter — smooth surface texture noise, preserve carving edges
+    stage = cv2.bilateralFilter(gray_image, bilateral_d, bilateral_sigma, bilateral_sigma)
+ 
+    # Stage 2 (optional): Gentle CLAHE — mild local contrast without blowing highlights
+    if use_clahe:
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_tile)
+        stage = clahe.apply(stage)
+ 
+    # Stage 3: Unsharp masking — sharpen edge definition at reduced strength
+    blur = cv2.GaussianBlur(stage, (0, 0), 3)
+    stage = cv2.addWeighted(stage, sharpen_strength, blur, -(sharpen_strength - 1), 0)
+ 
+    # Stage 4: Gamma correction — lift midtones while preserving shadow depth
+    # gamma > 1.0 brightens midtones without crushing the dark recesses
+    lut = np.array(
+        [int(255 * (i / 255) ** (1.0 / gamma)) for i in range(256)], dtype=np.uint8
+    )
+    enhanced_image = cv2.LUT(stage, lut)
+ 
+    return enhanced_image
+
+#Carving Edge Detection Function
+def detect_carving_edges(image, bilateral_d=9, bilateral_sigma=50.0,
+                          canny_low=20, canny_high=60,
+                          min_area=150, dilate_kernel_size=2,
+                          dilate_iterations=1, invert_output=False):
+    """
+    Detects carved line features using Canny edge detection rather than adaptive
+    thresholding. Preferred over isolate_carving_lines() when surface texture
+    speckle and carving lines share a similar brightness range, making threshold-
+    based separation ineffective. Canny responds to gradient strength (edge
+    sharpness) rather than local brightness, so it can distinguish the crisp
+    edges of carved features from the softer transitions of surface texture.
+ 
+    Best used on the output of bilateral_filter() + unsharp_mask() rather than
+    on a raw or heavily processed image.
+ 
+    Parameters:
+    - image: The input image to be processed (numpy array).
+              Ideally a lightly denoised and sharpened grayscale image.
+    - bilateral_d: Diameter of bilateral filter neighbourhood applied before
+                   edge detection (default is 9). Smooths micro-texture that
+                   would otherwise produce false edges.
+    - bilateral_sigma: Bilateral filter sigma for colour and space (default is 50.0).
+                       Lower than the enhancement pipeline to preserve edge crispness.
+    - canny_low: Lower threshold for Canny hysteresis (default is 20).
+                 Edges with gradient below this are discarded. Decrease to pick up
+                 fainter carving edges; increase to reduce noise edges.
+    - canny_high: Upper threshold for Canny hysteresis (default is 60).
+                  Edges above this are always kept. Ratio to canny_low of ~1:3
+                  is a good starting point. Increase to keep only the strongest edges.
+    - min_area: Minimum pixel area for a connected edge component to be kept
+                (default is 150). Removes small isolated noise edges. Increase
+                (e.g. 300-500) to keep only large continuous carving strokes.
+    - dilate_kernel_size: Size of the elliptical kernel for post-detection dilation
+                          (default is 2). Thickens surviving edge lines slightly
+                          to improve visibility.
+    - dilate_iterations: Number of dilation passes (default is 1).
+    - invert_output: If True, returns white edges on black background.
+                     If False (default), returns black edges on white background.
+ 
+    Returns:
+    - edge_image: Binary image with detected carving edges, noise-filtered and
+                  optionally dilated for visibility.
+    """
+    # Convert the image to grayscale if it is not already
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_image = image.copy()
+ 
+    # Stage 1: Bilateral filter — smooth micro-texture before edge detection
+    # without blurring the carving edges themselves
+    smoothed = cv2.bilateralFilter(gray_image, bilateral_d, bilateral_sigma, bilateral_sigma)
+ 
+    # Stage 2: Canny edge detection — responds to gradient strength, not brightness
+    # so carved edges (sharp transitions) survive while soft texture speckle drops out
+    edges = cv2.Canny(smoothed, threshold1=canny_low, threshold2=canny_high)
+ 
+    # Stage 3: Remove small noise edge blobs via connected component filtering
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(edges)
+    cleaned = np.zeros_like(edges)
+    for i in range(1, n_labels):
+        if stats[i, cv2.CC_STAT_AREA] >= min_area:
+            cleaned[labels == i] = 255
+ 
+    # Stage 4: Dilate surviving edges to improve line visibility and connectivity
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (dilate_kernel_size, dilate_kernel_size)
+    )
+    edge_image = cv2.dilate(cleaned, kernel, iterations=dilate_iterations)
+ 
+    # Return white-on-black or black-on-white depending on preference
+    if not invert_output:
+        edge_image = cv2.bitwise_not(edge_image)
+ 
+    return edge_image
