@@ -401,6 +401,77 @@ def enhance_low_relief(image, bilateral_d=9, bilateral_sigma=50.0,
  
     return result
 
+#Sharp Low Relief Enhancement Function
+def enhance_low_relief_sharp(image, bilateral_d=5, bilateral_sigma=25.0,
+                              sharpen_strength=1.5, blur_sigma=1.0,
+                              clahe_clip=3.0, clahe_tile=(8, 8),
+                              layer_weight=0.5, final_weight=0.6,
+                              gamma=1.0):
+    """
+    A sharper variant of enhance_low_relief() for images where the standard
+    pipeline produces too much blur. Reduces bilateral filter smoothing and
+    tightens the unsharp mask radius so fine carving detail is preserved.
+    Use when carved lines are thin or closely spaced and the standard pipeline
+    is softening them together.
+ 
+    Key differences from enhance_low_relief():
+    - bilateral_d reduced from 9 to 5 — smaller neighbourhood, less smoothing
+    - bilateral_sigma reduced from 50.0 to 25.0 — preserves finer edge detail
+    - blur_sigma reduced from 2.0 to 1.0 — tighter unsharp mask radius
+    - sharpen_strength increased from 1.3 to 1.5 — compensates for less pre-blur
+ 
+    Parameters:
+    - image: The input image to be processed (numpy array).
+    - bilateral_d: Bilateral filter neighbourhood diameter (default is 5).
+    - bilateral_sigma: Bilateral filter sigma for colour and space (default is 25.0).
+    - sharpen_strength: Unsharp mask weight (default is 1.5).
+    - blur_sigma: Gaussian blur sigma for unsharp mask (default is 1.0).
+    - clahe_clip: CLAHE contrast clip limit (default is 3.0).
+    - clahe_tile: CLAHE tile grid size (default is (8, 8)).
+    - layer_weight: Blend weight of CLAHE result vs original gray (default is 0.5).
+    - final_weight: Blend weight of unsharp vs layered result (default is 0.6).
+    - gamma: Gamma correction applied as a final step (default is 1.0, i.e. off).
+             Values < 1.0 darken midtones to deepen perceived relief (try 0.8).
+ 
+    Returns:
+    - result: The final enhanced image.
+    """
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_image = image.copy()
+ 
+    # Stage 1: Light bilateral denoise — preserves fine edge detail
+    denoised = cv2.bilateralFilter(gray_image, bilateral_d, bilateral_sigma, bilateral_sigma)
+    blurred = cv2.GaussianBlur(denoised, (0, 0), blur_sigma)
+    enhanced = cv2.addWeighted(denoised, sharpen_strength, blurred, -(sharpen_strength - 1), 0)
+ 
+    # Stage 2: Second unsharp pass with tight radius
+    blurred2 = cv2.GaussianBlur(enhanced, (0, 0), blur_sigma)
+    unsharp = cv2.addWeighted(enhanced, sharpen_strength, blurred2, -(sharpen_strength - 1), 0)
+ 
+    # Stage 3: CLAHE on the unsharp result
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_tile)
+    clahe_unsharp = clahe.apply(unsharp)
+ 
+    # Stage 4: Blend CLAHE result with original grayscale
+    layered_unsharp = cv2.addWeighted(clahe_unsharp, layer_weight, gray_image, 1.0 - layer_weight, 0)
+ 
+    # Stage 5: Blend unsharp with the layered result
+    final_unsharp = cv2.addWeighted(unsharp, final_weight, layered_unsharp, 1.0 - final_weight, 0)
+ 
+    # Stage 6: Final blend of CLAHE unsharp with the stage 5 result
+    result = cv2.addWeighted(clahe_unsharp, final_weight, final_unsharp, 1.0 - final_weight, 0)
+ 
+    # Stage 7: Optional gamma correction — only applied if gamma != 1.0
+    if gamma != 1.0:
+        lut = np.array(
+            [int(255 * (i / 255) ** gamma) for i in range(256)], dtype=np.uint8
+        )
+        result = cv2.LUT(result, lut)
+ 
+    return result
+
 #Carving Line Isolation Function
 def isolate_carving_lines(image, median_blur_size=3, block_size=25, threshold_c=4,
                            dilate_kernel_size=2, dilate_iterations=1,
